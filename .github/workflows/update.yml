@@ -1,0 +1,65 @@
+name: Update and publish
+
+on:
+  schedule:
+    - cron: "17 9 * * *"   # daily; poe2db updates within hours of a patch
+  workflow_dispatch:        # run by hand right after a content release
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # A failed scrape keeps the last good data and still publishes the site.
+      - name: Scrape poe2db
+        id: scrape
+        if: github.event_name != 'push'
+        continue-on-error: true
+        run: python scrape/mods.py
+
+      - name: Commit changed data
+        if: github.event_name != 'push'
+        run: |
+          git add data/
+          if git diff --cached --quiet; then
+            echo "No data changes."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Update data from poe2db"
+            git push
+          fi
+
+      - name: Build site
+        run: python build.py
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Flag a failed scrape
+        if: steps.scrape.outcome == 'failure'
+        run: |
+          echo "::error::Scrape failed; the site still shows the last good data. poe2db's page layout may have changed."
+          exit 1
